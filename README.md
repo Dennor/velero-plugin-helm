@@ -12,7 +12,7 @@ $ velero plugin add dennor/velero-plugin-helm:latest
 
 ## Example of backup and restore
 
-1. Deploy example chart `nging-chart`
+1. Deploy example chart `nginx-chart`
 
 ```
 $ helm install --name nginx-example-release ./examples/nginx-chart
