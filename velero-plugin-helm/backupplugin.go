@@ -153,15 +153,15 @@ func (p *BackupPlugin) getIdentifiers(metadata metav1.Object) ([]backup.Resource
 	// Backup all release revisions
 	for _, relVer := range releaseVersions {
 		// Only backup resources for releases that are deployed
-		if release.GetInfo().GetStatus().GetCode() == rspb.Status_DEPLOYED {
-			for _, hook := range release.GetHooks() {
-				hookResources, err := hookResources(release, hook)
+		if relVer.GetInfo().GetStatus().GetCode() == rspb.Status_DEPLOYED {
+			for _, hook := range relVer.GetHooks() {
+				hookResources, err := hookResources(relVer, hook)
 				if err != nil {
 					return nil, err
 				}
 				resources = append(resources, hookResources...)
 			}
-			releaseResources, err := fromManifest(release, release.GetManifest())
+			releaseResources, err := fromManifest(relVer, relVer.GetManifest())
 			if err != nil {
 				return nil, err
 			}
