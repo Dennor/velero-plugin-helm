@@ -24,6 +24,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 
+	"github.com/heptio/velero/pkg/discovery"
+	clientset "github.com/heptio/velero/pkg/generated/clientset/versioned"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -67,8 +69,9 @@ func (c *configmapsStorage) Name() string { return "configmaps" }
 
 // BackupPlugin is a backup item action for helm chart.
 type BackupPlugin struct {
-	storage storageFactory
-	log     logrus.FieldLogger
+	clientset clientset.Interface
+	log       logrus.FieldLogger
+	storage   storageFactory
 }
 
 // AppliesTo returns configmaps/secrets that are deployed and owned by tiller.
@@ -87,7 +90,14 @@ type manifest struct {
 	} `yaml:"metadata"`
 }
 
-func fromManifest(release *rspb.Release, manifestString string) ([]backup.ResourceIdentifier, error) {
+func (r *releaseBackup) resourceNamespace(apiResource *metav1.APIResource) string {
+	if apiResource.Namespaced {
+		return r.release.GetNamespace()
+	}
+	return ""
+}
+
+func (r *releaseBackup) fromManifest(manifestString string) ([]backup.ResourceIdentifier, error) {
 	var resources []backup.ResourceIdentifier
 	dec := yaml.NewDecoder(strings.NewReader(manifestString))
 	for {
@@ -103,12 +113,21 @@ func fromManifest(release *rspb.Release, manifestString string) ([]backup.Resour
 		if err != nil {
 			return nil, err
 		}
+		gvr, apiResource, err := r.helper.ResourceFor(schema.GroupVersionResource{
+			Group:    gv.Group,
+			Version:  gv.Version,
+			Resource: m.Kind,
+		})
+		if err != nil {
+			return nil, err
+		}
+
 		resources = append(resources, backup.ResourceIdentifier{
 			GroupResource: schema.GroupResource{
-				Group:    gv.Group,
-				Resource: m.Kind,
+				Group:    gvr.Group,
+				Resource: gvr.Resource,
 			},
-			Namespace: release.GetNamespace(),
+			Namespace: r.resourceNamespace(&apiResource),
 			Name:      m.Metadata.Name,
 		})
 	}
@@ -121,7 +140,7 @@ func filterReleaseName(releaseName string) func(rls *rspb.Release) bool {
 	}
 }
 
-func hookResources(release *rspb.Release, hook *rspb.Hook) ([]backup.ResourceIdentifier, error) {
+func (r *releaseBackup) hookResources(hook *rspb.Hook) ([]backup.ResourceIdentifier, error) {
 	// Hook never ran, skip it
 	if hook.GetLastRun().GetSeconds() == 0 {
 		return nil, nil
@@ -136,16 +155,24 @@ func hookResources(release *rspb.Release, hook *rspb.Hook) ([]backup.ResourceIde
 			return nil, nil
 		}
 	}
-	return fromManifest(release, hook.GetManifest())
+	return r.fromManifest(hook.GetManifest())
 }
 
-func (p *BackupPlugin) getIdentifiers(metadata metav1.Object) ([]backup.ResourceIdentifier, error) {
-	driver := p.storage.Storage(metadata.GetNamespace())
-	release, err := driver.Get(metadata.GetName())
+type releaseBackup struct {
+	metadata metav1.Object
+	log      logrus.FieldLogger
+	driver   storage.Driver
+	helper   discovery.Helper
+	release  *rspb.Release
+}
+
+func (r *releaseBackup) runReleaseBackup() ([]backup.ResourceIdentifier, error) {
+	release, err := r.driver.Get(r.metadata.GetName())
 	if err != nil {
 		return nil, err
 	}
-	releaseVersions, err := driver.List(filterReleaseName(release.GetName()))
+	r.release = release
+	releaseVersions, err := r.driver.List(filterReleaseName(release.GetName()))
 	if err != nil {
 		return nil, err
 	}
@@ -155,13 +182,13 @@ func (p *BackupPlugin) getIdentifiers(metadata metav1.Object) ([]backup.Resource
 		// Only backup resources for releases that are deployed
 		if relVer.GetInfo().GetStatus().GetCode() == rspb.Status_DEPLOYED {
 			for _, hook := range relVer.GetHooks() {
-				hookResources, err := hookResources(relVer, hook)
+				hookResources, err := r.hookResources(hook)
 				if err != nil {
 					return nil, err
 				}
 				resources = append(resources, hookResources...)
 			}
-			releaseResources, err := fromManifest(relVer, relVer.GetManifest())
+			releaseResources, err := r.fromManifest(relVer.GetManifest())
 			if err != nil {
 				return nil, err
 			}
@@ -169,28 +196,29 @@ func (p *BackupPlugin) getIdentifiers(metadata metav1.Object) ([]backup.Resource
 		}
 		resources = append(resources, backup.ResourceIdentifier{
 			GroupResource: schema.GroupResource{
-				Resource: driver.Name(),
+				Resource: r.driver.Name(),
 			},
-			Namespace: metadata.GetNamespace(),
+			Namespace: r.metadata.GetNamespace(),
 			Name:      relVer.GetName() + "." + "v" + strconv.FormatInt(int64(relVer.GetVersion()), 10),
 		})
 	}
 
-	resourcesLog := make([]logrus.Fields, 0)
-	for _, res := range resources {
-		resourcesLog = append(resourcesLog, logrus.Fields{
-			"group":     res.Group,
-			"resource":  res.Resource,
-			"name":      res.Name,
-			"namespace": res.Namespace,
-		})
-	}
-	fields := logrus.Fields{
-		"release":   release.GetName(),
-		"resources": resourcesLog,
-	}
-	p.log.WithFields(fields).Debug("backing up resources for helm release")
 	return resources, nil
+}
+
+func (p *BackupPlugin) getIdentifiers(metadata metav1.Object) ([]backup.ResourceIdentifier, error) {
+	driver := p.storage.Storage(metadata.GetNamespace())
+	helper, err := discovery.NewHelper(p.clientset.Discovery(), p.log)
+	if err != nil {
+		return nil, err
+	}
+	releaseBackup := releaseBackup{
+		metadata: metadata,
+		driver:   driver,
+		log:      p.log,
+		helper:   helper,
+	}
+	return releaseBackup.runReleaseBackup()
 }
 
 // Execute returns chart configmap/secret allong with all additional resources defined by chart.

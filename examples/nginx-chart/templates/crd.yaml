@@ -1,0 +1,24 @@
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: examplecrds.{{ .Release.Name }}.io
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    app.kubernetes.io/name: {{ template "nginx.name" . }}
+  annotations:
+    "helm.sh/hook": crd-install
+spec:
+  group: {{ .Release.Name }}.io
+  versions:
+  - name: v1
+    served: true
+    storage: true
+  scope: Namespaced
+  names:
+    plural: examplecrds
+    singular: examplecrd
+    kind: ExampleCrd
+    shortNames:
+    - ec

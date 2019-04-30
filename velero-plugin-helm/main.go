@@ -33,17 +33,21 @@ func main() {
 
 func newBackupPlugin(f client.Factory, resource string) func(logrus.FieldLogger) (interface{}, error) {
 	return func(logger logrus.FieldLogger) (interface{}, error) {
-		clientset, err := f.KubeClient()
+		kubeClient, err := f.KubeClient()
+		if err != nil {
+			return nil, err
+		}
+		clientset, err := f.Client()
 		if err != nil {
 			return nil, err
 		}
 		var sf storageFactory
 		switch resource {
 		case "configmaps":
-			sf = &configmapsStorage{clientset}
+			sf = &configmapsStorage{kubeClient}
 		case "secrets":
-			sf = &secretsStorage{clientset}
+			sf = &secretsStorage{kubeClient}
 		}
-		return &BackupPlugin{storage: sf, log: logger}, nil
+		return &BackupPlugin{clientset: clientset, log: logger, storage: sf}, nil
 	}
 }

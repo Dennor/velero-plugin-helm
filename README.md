@@ -29,6 +29,8 @@ $ velero backup describe nginx-example-release-backup
 
 ```
 $ helm delete --purge nginx-example-release
+$ kubectl delete crd examplecrds.nginx-example-release.io
+$ kubectl delete secret nginx-example-release-nginx
 ```
 
 4. Restore release
@@ -43,7 +45,3 @@ $ velero restore create --from-backup nginx-example-release-backup
 $ make clean
 $ make container IMAGE=dennor/velero-plugin-helm:latest
 ```
-
-## Limitations
-
-* Cluster scoped resources won't be backed up - if anyone can tell me how to tell velero that `ResourceIdentifier` is cluster scoped I will implement it.
